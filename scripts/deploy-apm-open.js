@@ -1,7 +1,7 @@
 const namehash = require('eth-ens-namehash').hash
 const keccak256 = require('js-sha3').keccak_256
 
-const deployAPM = require('./deploy-apm')
+const deployAPM = require('../repos/aragonOS/scripts/deploy-apm')
 
 const globalArtifacts = this.artifacts // Not injected unless called directly via truffle
 const globalWeb3 = this.web3 // Not injected unless called directly via truffle
@@ -27,13 +27,15 @@ module.exports = async (
     }
   }
 
+  const APMRegistry = artifacts.require('APMRegistry')
   const ENSSubdomainRegistrar = artifacts.require('ENSSubdomainRegistrar')
+  const Kernel = artifacts.require('Kernel')
+  const ACL = artifacts.require('ACL')
 
   const tldName = 'aragonpm.eth'
   const labelName = 'open'
   const tldHash = namehash(tldName)
   const labelHash = '0x' + keccak256(labelName)
-  const apmNode = namehash(`${labelName}.${tldName}`)
 
   // wrap deploy-apm
   const { apmFactory, ens, apm } = await deployAPM(null, {
@@ -45,10 +47,24 @@ module.exports = async (
   })
 
   ensAddress = ens.address
+  const registrar = await apm.registrar()
+  const apmENSSubdomainRegistrar = ENSSubdomainRegistrar.at(registrar)
+  const create_name_role = await apmENSSubdomainRegistrar.CREATE_NAME_ROLE()
 
-  const apmENSSubdomainRegistrar = ENSSubdomainRegistrar.at(
-    await apm.registrar()
-  )
+  log('Managing permissions...')
+  const kernel = Kernel.at(await apm.kernel())
+  const acl = ACL.at(await kernel.acl())
+
+  log(`Remove manager of create_name_role`)
+  // We need to remove the manager of the role to add permissions
+  await acl.removePermissionManager(registrar, create_name_role, {
+    from: owner,
+  })
+  log(`Create permission for root account on create_name_role`)
+  await acl.createPermission(owner, registrar, create_name_role, owner, {
+    from: owner,
+  })
+  log('=========')
 
   log(`TLD: ${tldName} (${tldHash})`)
   log(`Label: ${labelName} (${labelHash})`)
@@ -57,7 +73,7 @@ module.exports = async (
   log(`Assigning ENS name (${labelName}.${tldName}) to factory...`)
   try {
     await apmENSSubdomainRegistrar.createName(labelHash, apmFactory.address, {
-      from: apm.address,
+      from: owner,
     })
   } catch (err) {
     console.error(
@@ -77,8 +93,6 @@ module.exports = async (
   log('Address:', openAPMAddr)
   log('Transaction hash:', receipt.tx)
   log('=========')
-
-  // TODO: Update target
 
   if (typeof truffleExecCallback === 'function') {
     // Called directly via `truffle exec`
